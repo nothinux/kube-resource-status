@@ -2,10 +2,16 @@
 name = "resource-status"
 version = "0.1.0"
 edition = "2021"
+authors = ["nothinux <nothinux@gmail.com>"]
+description = "A tool that provide kubernetes cluster resource information, including cpu, memory, storage and number of pods."
+homepage = "https://github.com/nothinux/kube-resource-status"
+repository = "https://github.com/nothinux/kube-resource-status"
+readme = "./README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+bpaf = { version = "0.7.10", features = ["derive"] }
 derive = "1.0.0"
 k8s-openapi = { version = "0.17.0", features = ["v1_24"] }
 kube = { version = "0.80.0", features = ["default"] }

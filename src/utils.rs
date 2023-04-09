@@ -9,7 +9,7 @@ pub fn parse_resource_data(rrs: &Vec<kubernetes::ResouceRequests>) -> Vec<kubern
         let storage_total = (rr.storage_requests / rr.storage_total) * 100.0;
 
         let rs = kubernetes::ResourceStatus::new(
-            format!("{}", rr.node_name),
+            format!("{}", rr.name),
             format!("{}m ({:.2}%)", rr.cpu_requests, cpu_total),
             format!("{}Mi ({:.2}%)", rr.mem_requests, mem_total),
             format!("{}Mi ({:.2}%)", rr.storage_requests, storage_total),

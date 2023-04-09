@@ -1,11 +1,13 @@
+use std::str::FromStr;
+
 use kube::{Client, Api, api::ListParams};
-use k8s_openapi::api::core::v1::{Node, Pod};
+use k8s_openapi::api::core::v1::{Node, Pod, Namespace};
 use tabled::{Tabled};
 
 use super::utils;
 
 pub struct ResouceRequests {
-    pub node_name: String,
+    pub name: String,
     pub cpu_requests: u32,
     pub cpu_total: u32,
     pub mem_requests: f32,
@@ -26,9 +28,9 @@ pub struct ResourceStatus {
 }
 
 impl ResouceRequests {
-    pub fn new(node_name: String, cpu_requests: u32, cpu_total: u32, mem_requests: f32, mem_total: f32, storage_requests: f32, storage_total: f32, pods: usize, pods_total: usize) -> Self {
+    pub fn new(name: String, cpu_requests: u32, cpu_total: u32, mem_requests: f32, mem_total: f32, storage_requests: f32, storage_total: f32, pods: usize, pods_total: usize) -> Self {
         Self {
-            node_name,
+            name,
             cpu_requests,
             cpu_total,
             mem_requests,
@@ -53,10 +55,32 @@ impl ResourceStatus {
     }
 }
 
-pub async fn get_pods_resources_req_from_node(client: Client, node_name: &String) -> (u32, f32, f32, usize) {
+pub enum ResourceType {
+    Node,
+    Namespace,
+}
+
+impl FromStr for ResourceType {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "node" => Ok(ResourceType::Node),
+            "namespace" => Ok(ResourceType::Namespace),
+            _ => Err(()),
+        }
+    }
+}
+
+pub async fn get_pods_resources_req(client: Client, resource_type: &ResourceType, resource_name: &String) -> (u32, f32, f32, usize) {
     let api: Api<Pod> = Api::all(client);
 
-    let lp = ListParams::default().fields(format!("spec.nodeName={}", node_name).as_str());
+    let field_selector = match resource_type {
+        ResourceType::Node => format!("spec.nodeName={}", resource_name),
+        ResourceType::Namespace => format!("metadata.namespace={}", resource_name),
+    };
+
+    let lp = ListParams::default().fields(&field_selector.as_str());
 
     let pods = match api.list(&lp).await {
         Ok(pods) => pods,
@@ -98,8 +122,8 @@ async fn get_node_info(client: Client, node_name: &String) -> (u32, f32, f32, us
 
     let node = match api.get(node_name).await {
         Ok(node) => node,
-        Err(e) => {
-            eprintln!("Error get node information {}", e);
+        Err(_) => {
+            // eprintln!("Error get node information {}", e);
             return (0, 0.0, 0.0, 0);
         }
     };
@@ -130,17 +154,50 @@ async fn get_node_info(client: Client, node_name: &String) -> (u32, f32, f32, us
     return (total_cpu, total_mem, total_storage, total_pods)
 }
 
-pub async fn collect_node_info(client: Client, rrs: &mut Vec<ResouceRequests>) {
-    let api: Api<Node> = Api::all(client.clone());
+pub async fn collect_info(client: Client, rrs: &mut Vec<ResouceRequests>, resource_type: ResourceType, selector: Option<String>) {
+    let mut lp = ListParams::default();
+    let mut resource_names: Vec<String> = Vec::new();
 
-    let lp = ListParams::default();
+    match &resource_type {
+        ResourceType::Node => {
+            if let Some(node_lebels) = selector {
+                lp = ListParams::default().labels(&node_lebels)
+            }
 
-    let nodes = match api.list(&lp).await {
-        Ok(nodes) => nodes,
-        Err(e) => {
-            eprintln!("Error listing nodes {:?}", e);
-            return;
-        }
+            let api: Api<Node> = Api::all(client.clone());
+
+            let nodes = match api.list(&lp).await {
+                Ok(nodes) => nodes,
+                Err(e) => {
+                    eprintln!("Error listing nodes {:?}", e);
+                    return;
+                }
+            };
+
+            for node in nodes.items {
+                resource_names.push(node.metadata.name.unwrap());
+            }
+
+        },
+        ResourceType::Namespace => {
+            if let Some(ns_labels) = selector {
+                lp = ListParams::default().labels(&ns_labels)
+            }
+
+            let api: Api<Namespace> = Api::all(client.clone());
+
+            let namespaces = match api.list(&lp).await {
+                Ok(namespaces) => namespaces,
+                Err(e) => {
+                    eprintln!("Error listing namespaces {:?}", e);
+                    return;
+                }
+            };
+
+            for namespace in namespaces.items {
+                resource_names.push(namespace.metadata.name.unwrap());
+            }
+        },
     };
 
     let mut cluster_cpu_req: u32 = 0;
@@ -153,13 +210,11 @@ pub async fn collect_node_info(client: Client, rrs: &mut Vec<ResouceRequests>) {
     let mut cluster_pods_total: usize = 0;
 
 
-    for node in nodes.items {
+    for name in resource_names {
+        let (cpu_requests, mem_requests, storage_requests, pods) = get_pods_resources_req(client.clone(), &resource_type, &name).await;
+        let (cpu_total, mem_total, storage_total, pods_total) = get_node_info(client.clone(), &name).await;
 
-        let node_name = String::from(node.metadata.name.unwrap());
-        let (cpu_requests, mem_requests, storage_requests, pods) = get_pods_resources_req_from_node(client.clone(), &node_name).await;
-        let (cpu_total, mem_total, storage_total, pods_total) = get_node_info(client.clone(), &node_name).await;
-
-        utils::add_data(node_name, cpu_requests, cpu_total, mem_requests, mem_total, storage_requests, storage_total, pods, pods_total, rrs).await;
+        utils::add_data(name.clone(), cpu_requests, cpu_total, mem_requests, mem_total, storage_requests, storage_total, pods, pods_total, rrs).await;
 
         cluster_cpu_req += cpu_requests;
         cluster_cpu_total += cpu_total;
