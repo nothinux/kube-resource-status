@@ -12,8 +12,9 @@ readme = "./README.md"
 
 [dependencies]
 bpaf = { version = "0.7.10", features = ["derive"] }
-derive = "1.0.0"
+hyper = { version = "0.14.26", features = ["client"] }
 k8s-openapi = { version = "0.17.0", features = ["v1_24"] }
-kube = { version = "0.80.0", features = ["default"] }
+kube = { version = "0.80.0", features = ["default", "rustls-tls"] }
 tabled = "0.10.0"
 tokio = { version = "1.27.0", features = ["full"] }
+tower = "0.4.13"

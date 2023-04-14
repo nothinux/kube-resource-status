@@ -1,7 +1,7 @@
-use std::str::FromStr;
+use std::{str::FromStr};
 
-use kube::{Client, Api, api::ListParams};
-use k8s_openapi::api::core::v1::{Node, Pod, Namespace};
+use kube::{Client, Config, Api, api::ListParams, client::ConfigExt};
+use k8s_openapi::{api::core::v1::{Node, Pod, Namespace, Container}};
 use tabled::{Tabled};
 
 use super::utils;
@@ -20,7 +20,7 @@ pub struct ResouceRequests {
 
 #[derive(Tabled)]
 pub struct ResourceStatus {
-    node_name: String,
+    name: String,
     cpu: String,
     mem: String,
     storage: String,
@@ -44,9 +44,9 @@ impl ResouceRequests {
 }
 
 impl ResourceStatus {
-    pub fn new(node_name: String, cpu: String, mem: String, storage: String, pods: String) -> Self {
+    pub fn new(name: String, cpu: String, mem: String, storage: String, pods: String) -> Self {
         Self {
-            node_name,
+            name,
             cpu,
             mem,
             storage,
@@ -72,6 +72,22 @@ impl FromStr for ResourceType {
     }
 }
 
+pub async fn connect() -> Client {
+    let c = Config::infer().await.unwrap();
+    
+    let client = if c.tls_server_name.is_some() {
+        let https = c.rustls_https_connector().unwrap();
+        let service = tower::ServiceBuilder::new().layer(c.base_uri_layer()).service(hyper::Client::builder().build(https));
+        Client::new(service, c.default_namespace)
+    } else {
+        let https = c.openssl_https_connector().unwrap();
+        let service = tower::ServiceBuilder::new().layer(c.base_uri_layer()).service(hyper::Client::builder().build(https));
+        Client::new(service, c.default_namespace)
+    };
+
+    return client;
+}
+
 pub async fn get_pods_resources_req(client: Client, resource_type: &ResourceType, resource_name: &String) -> (u32, f32, f32, usize) {
     let api: Api<Pod> = Api::all(client);
 
@@ -95,26 +111,57 @@ pub async fn get_pods_resources_req(client: Client, resource_type: &ResourceType
     let mut storage_requested: f32 = 0.0;
 
     for pod in pods.items.clone() {
-        if let Some(spec) = pod.spec {
-            for container in spec.containers {
-                if let Some(resources) = container.resources {
-                    if let Some(requests) = resources.requests {
-                        if let Some(cpu) = requests.get("cpu") {
-                            cpu_requested += utils::parse_cpu_requests(cpu.0.to_string())
-                        }
-                        if let Some(mem) = requests.get("memory") {
-                            mem_requested += utils::parse_capacity_requests(mem.0.to_string())
-                        }
-                        if let Some(storage) = requests.get("ephemeral-storage") {
-                            storage_requested += utils::parse_capacity_requests(storage.0.to_string())
-                        }
-                    }
+        if let Some(status) = pod.status {
+            if let Some(phase) = status.phase {
+                if phase == "Failed" || phase == "Completed" || phase == "Succeeded" {
+                    continue;
                 }
             }
+        }
+
+        if let Some(spec) = pod.spec {
+            let mut init_cpu_requested: u32 = 0;
+            let mut init_mem_requested: f32 = 0.0;
+            let mut init_storage_requested: f32 = 0.0;
+
+            if let Some(init_containers) = spec.init_containers {
+                (init_cpu_requested, init_mem_requested, init_storage_requested) = get_containers_resources_req(init_containers).await;
+            }
+
+            let (cpu_req, mem_req, storage_req) = get_containers_resources_req(spec.containers).await;
+
+            cpu_requested += cpu_req.max(init_cpu_requested);
+            mem_requested += mem_req.max(init_mem_requested);
+            storage_requested += storage_req.max(init_storage_requested);
         }
     }
 
     return (cpu_requested, mem_requested, storage_requested, pods.items.len());
+}
+
+async fn get_containers_resources_req(containers: Vec<Container>) -> (u32, f32, f32) {
+    let mut cpu_requested: u32 = 0;
+    let mut mem_requested: f32 = 0.0;
+    let mut storage_requested: f32 = 0.0;
+
+    for container in containers {
+        if let Some(resources) = container.resources {
+            if let Some(requests) = resources.requests {
+                if let Some(cpu) = requests.get("cpu") {
+                    cpu_requested += utils::parse_cpu_requests(cpu.0.to_string())
+                }
+                if let Some(mem) = requests.get("memory") {
+                    mem_requested += utils::parse_capacity_requests(mem.0.to_string())
+                }
+                if let Some(storage) = requests.get("ephemeral-storage") {
+                    storage_requested += utils::parse_capacity_requests(storage.0.to_string())
+                }
+            }
+        }
+    }
+    //println!("{} - {}", cpu_requested, mem_requested);
+
+    return (cpu_requested, mem_requested, storage_requested)
 }
 
 async fn get_node_info(client: Client, node_name: &String) -> (u32, f32, f32, usize) {

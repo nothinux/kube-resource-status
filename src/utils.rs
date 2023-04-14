@@ -56,17 +56,17 @@ pub fn parse_cpu_requests(cpu: String) -> u32 {
 pub fn parse_capacity_requests(mem: String) -> f32 {
     if mem.contains("Ki") {
         let m = mem.replace("Ki", "");
-        return m.parse::<f32>().unwrap() / 1000.0;
+        return m.parse::<f32>().unwrap() / 1024.0;
     } else if mem.contains("Mi") {
         let m = mem.replace("Mi", "");
         return m.parse::<f32>().unwrap();
     } else if mem.contains("Gi") {
         let m = mem.replace("Gi", "");
-        return m.parse::<f32>().unwrap() * 1000.0;
+        return m.parse::<f32>().unwrap() * 1024.0;
     } else if mem.contains("Ti") {
         let m = mem.replace("Ti", "");
-        return m.parse::<f32>().unwrap() * 1000.0 * 1000.0;
+        return m.parse::<f32>().unwrap() * 1024.0 * 1024.0;
     } else {
-        return 0.0;
+        return mem.parse::<f32>().unwrap() / 1024.0 / 1024.0;
     }
 }

@@ -1,7 +1,6 @@
 use std::str::FromStr;
 
 use bpaf::Bpaf;
-use kube::{Client};
 use tabled::{Table, Style};
 
 #[derive(Clone, Debug, Bpaf)]
@@ -31,15 +30,8 @@ async fn main() {
         resource_type =  kubernetes::ResourceType::from_str(&rt).unwrap();
     }
 
-    let client = match Client::try_default().await {
-        Err(e) => {
-            eprintln!("Error creating kubernetes client {:?}", e);
-            return;
-        },
-        Ok(client) => client,
-    };
-
     let mut resource_req = Vec::new();
+    let client = kubernetes::connect().await;
 
     kubernetes::collect_info(client.clone(), &mut resource_req, resource_type, opts.selector).await;
 
@@ -47,6 +39,5 @@ async fn main() {
     let mut table = Table::new(&data);
 
     table.with(Style::rounded());
-
     println!("{}", table);
 }
