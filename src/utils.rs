@@ -1,9 +1,52 @@
+use std::cmp::Reverse;
+use std::{str::FromStr};
+
 use super::kubernetes;
 
-pub fn parse_resource_data(rrs: &Vec<kubernetes::ResouceRequests>) -> Vec<kubernetes::ResourceStatus> {
-    let mut rss = Vec::new();
+pub enum Filter {
+    Cpu,
+    Mem,
+    Storage,
+    Pods,
+    None,
+}
 
-    for rr in rrs {
+impl FromStr for Filter {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim() {
+            "" => Ok(Filter::None),
+            "cpu" => Ok(Filter::Cpu),
+            "mem" => Ok(Filter::Mem),
+            "storage" => Ok(Filter::Storage),
+            "pods" => Ok(Filter::Pods),
+            _ => Err(format!("invalid filter {}", s))
+        }
+    }
+}
+
+pub fn parse_resource_data(rrs: Vec<kubernetes::ResouceRequests>, sort_by: Filter) -> Vec<kubernetes::ResourceStatus> {
+    let mut rss = Vec::new();
+    let mut data: Vec<kubernetes::ResouceRequests> = rrs.clone();
+
+    match sort_by {
+        Filter::Cpu => data.sort_by_key(|r| Reverse(r.cpu_requests)),
+        Filter::Mem => {
+            data.sort_by(|a, b| {
+                b.mem_requests.partial_cmp(&a.mem_requests).unwrap()
+            })
+        },
+        Filter::Storage => {
+            data.sort_by(|a, b| {
+                b.storage_requests.partial_cmp(&a.storage_requests).unwrap()
+            })
+        },
+        Filter::Pods => data.sort_by_key(|r| Reverse(r.pods)),
+        _ => (),
+    }
+
+    for rr in data {
         let cpu_total = (rr.cpu_requests as f32 / rr.cpu_total as f32) * 100.0;
         let mem_total = (rr.mem_requests / rr.mem_total) * 100.0;
         let storage_total = (rr.storage_requests / rr.storage_total) * 100.0;

@@ -5,7 +5,7 @@ use k8s_openapi::{api::core::v1::{Node, Pod, Namespace, Container}};
 use tabled::{Tabled};
 
 use super::utils;
-
+#[derive(Clone)]
 pub struct ResouceRequests {
     pub name: String,
     pub cpu_requests: u32,
@@ -58,23 +58,23 @@ impl ResourceStatus {
 pub enum ResourceType {
     Node,
     Namespace,
-}
+} 
 
 impl FromStr for ResourceType {
-    type Err = ();
+    type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "node" => Ok(ResourceType::Node),
             "namespace" => Ok(ResourceType::Namespace),
-            _ => Err(()),
+            _ => Err(format!("invalid resource type {}", s)),
         }
     }
 }
 
 pub async fn connect() -> Client {
     let c = Config::infer().await.unwrap();
-    
+
     let client = if c.tls_server_name.is_some() {
         let https = c.rustls_https_connector().unwrap();
         let service = tower::ServiceBuilder::new().layer(c.base_uri_layer()).service(hyper::Client::builder().build(https));
@@ -159,7 +159,6 @@ async fn get_containers_resources_req(containers: Vec<Container>) -> (u32, f32, 
             }
         }
     }
-    //println!("{} - {}", cpu_requested, mem_requested);
 
     return (cpu_requested, mem_requested, storage_requested)
 }
@@ -169,8 +168,8 @@ async fn get_node_info(client: Client, node_name: &String) -> (u32, f32, f32, us
 
     let node = match api.get(node_name).await {
         Ok(node) => node,
-        Err(_) => {
-            // eprintln!("Error get node information {}", e);
+        Err(e) => {
+            eprintln!("Error get node information {}", e);
             return (0, 0.0, 0.0, 0);
         }
     };
@@ -255,7 +254,6 @@ pub async fn collect_info(client: Client, rrs: &mut Vec<ResouceRequests>, resour
     let mut cluster_storage_total: f32 = 0.0;
     let mut cluster_pods_req: usize = 0;
     let mut cluster_pods_total: usize = 0;
-
 
     for name in resource_names {
         let (cpu_requests, mem_requests, storage_requests, pods) = get_pods_resources_req(client.clone(), &resource_type, &name).await;
