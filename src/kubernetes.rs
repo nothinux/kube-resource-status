@@ -1,17 +1,56 @@
 use std::{str::FromStr};
 
-use kube::{Client, Config, Api, api::ListParams, client::ConfigExt};
-use k8s_openapi::{api::core::v1::{Node, Pod, Namespace, Container}};
+use kube::{Client, Config, Api, api::ListParams, client::ConfigExt, core::ObjectMeta};
+use k8s_openapi::{api::core::v1::{Node, Pod, Namespace, Container}, apimachinery::pkg::api::resource::Quantity};
 use tabled::{Tabled};
 
+use crate::utils::{parse_cpu_requests, parse_capacity_requests};
+
 use super::utils;
+
+#[derive(serde::Deserialize, Clone, Debug)]
+struct Usage {
+    cpu: Quantity,
+    memory: Quantity,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+struct NodeMetrics {
+    metadata: ObjectMeta,
+    usage: Usage,
+}
+
+impl k8s_openapi::Resource for NodeMetrics {
+    const GROUP: &'static str = "metrics.k8s.io";
+    const KIND: &'static str = "node";
+    const VERSION: &'static str = "v1beta1";
+    const API_VERSION: &'static str = "metrics.k8s.io/v1beta1";
+    const URL_PATH_SEGMENT: &'static str = "nodes";
+
+    type Scope = k8s_openapi::ClusterResourceScope;
+}
+
+impl k8s_openapi::Metadata for NodeMetrics {
+    type Ty = ObjectMeta;
+
+    fn metadata(&self) -> &<Self as k8s_openapi::Metadata>::Ty {
+        &self.metadata
+    }
+
+    fn metadata_mut(&mut self) -> &mut<Self as k8s_openapi::Metadata>::Ty {
+        &mut self.metadata
+    }
+}
+
 #[derive(Clone)]
 pub struct ResouceRequests {
     pub name: String,
     pub cpu_requests: u32,
     pub cpu_total: u32,
+    pub cpu_usage: u32,
     pub mem_requests: f32,
     pub mem_total: f32,
+    pub mem_usage: f32,
     pub storage_requests: f32,
     pub storage_total: f32,
     pub pods: usize,
@@ -22,19 +61,28 @@ pub struct ResouceRequests {
 pub struct ResourceStatus {
     name: String,
     cpu: String,
+    #[tabled(rename = "cpu usage")]
+    cpu_usage: String,
     mem: String,
+    #[tabled(rename = "mem usage")]
+    mem_usage: String,
     storage: String,
     pods: String,
 }
 
 impl ResouceRequests {
-    pub fn new(name: String, cpu_requests: u32, cpu_total: u32, mem_requests: f32, mem_total: f32, storage_requests: f32, storage_total: f32, pods: usize, pods_total: usize) -> Self {
+    pub fn new(
+        name: String, cpu_requests: u32, cpu_total: u32, cpu_usage: u32,
+        mem_requests: f32, mem_total: f32, mem_usage: f32, storage_requests: f32,
+        storage_total: f32, pods: usize, pods_total: usize) -> Self {
         Self {
             name,
             cpu_requests,
             cpu_total,
+            cpu_usage,
             mem_requests,
             mem_total,
+            mem_usage,
             storage_requests,
             storage_total,
             pods,
@@ -44,11 +92,13 @@ impl ResouceRequests {
 }
 
 impl ResourceStatus {
-    pub fn new(name: String, cpu: String, mem: String, storage: String, pods: String) -> Self {
+    pub fn new(name: String, cpu: String, cpu_usage: String, mem: String, mem_usage: String, storage: String, pods: String) -> Self {
         Self {
             name,
             cpu,
+            cpu_usage,
             mem,
+            mem_usage,
             storage,
             pods,
         }
@@ -86,6 +136,22 @@ pub async fn connect() -> Client {
     };
 
     return client;
+}
+
+pub async fn get_node_utilization(client: Client, node_name: &String) -> (u32, f32) {
+    let api = Api::<NodeMetrics>::all(client);
+    let node_metrics = match api.get(node_name).await {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("Error get node utilization information {}", e);
+            return (0, 0.0);
+        }
+    };
+
+    let cpu_usage = parse_cpu_requests(node_metrics.usage.cpu.0.to_string());
+    let mem_usage = parse_capacity_requests(node_metrics.usage.memory.0.to_string());
+
+    return (cpu_usage, mem_usage);
 }
 
 pub async fn get_pods_resources_req(client: Client, resource_type: &ResourceType, resource_name: &String) -> (u32, f32, f32, usize) {
@@ -200,7 +266,7 @@ async fn get_node_info(client: Client, node_name: &String) -> (u32, f32, f32, us
     return (total_cpu, total_mem, total_storage, total_pods)
 }
 
-pub async fn collect_info(client: Client, rrs: &mut Vec<ResouceRequests>, resource_type: ResourceType, selector: Option<String>) {
+pub async fn collect_info(client: Client, rrs: &mut Vec<ResouceRequests>, resource_type: ResourceType, utilization: bool, selector: Option<String>) {
     let mut lp = ListParams::default();
     let mut resource_names: Vec<String> = Vec::new();
 
@@ -248,8 +314,10 @@ pub async fn collect_info(client: Client, rrs: &mut Vec<ResouceRequests>, resour
 
     let mut cluster_cpu_req: u32 = 0;
     let mut cluster_cpu_total: u32 = 0;
+    let mut cluster_cpu_usage: u32 = 0;
     let mut cluster_mem_req: f32 = 0.0;
     let mut cluster_mem_total: f32 = 0.0;
+    let mut cluster_mem_usage: f32 = 0.0;
     let mut cluster_storage_req: f32 = 0.0;
     let mut cluster_storage_total: f32 = 0.0;
     let mut cluster_pods_req: usize = 0;
@@ -259,12 +327,20 @@ pub async fn collect_info(client: Client, rrs: &mut Vec<ResouceRequests>, resour
         let (cpu_requests, mem_requests, storage_requests, pods) = get_pods_resources_req(client.clone(), &resource_type, &name).await;
         let (cpu_total, mem_total, storage_total, pods_total) = get_node_info(client.clone(), &name).await;
 
-        utils::add_data(name.clone(), cpu_requests, cpu_total, mem_requests, mem_total, storage_requests, storage_total, pods, pods_total, rrs).await;
+        let mut cpu_usage: u32 = 0;
+        let mut mem_usage: f32 = 0.0;
+        if utilization {
+            (cpu_usage, mem_usage) = get_node_utilization(client.clone(), &name).await;
+        }
+
+        utils::add_data(name.clone(), cpu_requests, cpu_total, cpu_usage, mem_requests, mem_total, mem_usage, storage_requests, storage_total, pods, pods_total, rrs).await;
 
         cluster_cpu_req += cpu_requests;
         cluster_cpu_total += cpu_total;
+        cluster_cpu_usage += cpu_usage;
         cluster_mem_req += mem_requests;
         cluster_mem_total += mem_total;
+        cluster_mem_usage += mem_usage;
         cluster_storage_req += storage_requests;
         cluster_storage_total += storage_total;
         cluster_pods_req += pods;
@@ -275,8 +351,10 @@ pub async fn collect_info(client: Client, rrs: &mut Vec<ResouceRequests>, resour
         String::from("*"),
         cluster_cpu_req,
         cluster_cpu_total,
+        cluster_cpu_usage,
         cluster_mem_req,
         cluster_mem_total,
+        cluster_mem_usage,
         cluster_storage_req,
         cluster_storage_total,
         cluster_pods_req,
