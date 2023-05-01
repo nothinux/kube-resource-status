@@ -1,15 +1,15 @@
 use std::str::FromStr;
 
 use bpaf::Bpaf;
-use tabled::{Table, Style};
+use tabled::{Table, Style, Disable, locator::ByColumnName};
 
 #[derive(Clone, Debug, Bpaf)]
 #[bpaf(options, version)]
 /// a tool that provide kubernetes cluster resource information, including cpu, memory, storage and number of pods.
 struct Options {
-    #[bpaf(short('c'), long)]
-    /// set spesific context
-    context: Option<String>,
+    #[bpaf(short('u'), long)]
+    /// show the real utilization
+    utilization: bool,
     #[bpaf(short('l'), long)]
     /// filter spesific node using it's label
     selector: Option<String>,
@@ -56,11 +56,16 @@ async fn main() {
     let mut resource_req = Vec::new();
     let client = kubernetes::connect().await;
 
-    kubernetes::collect_info(client.clone(), &mut resource_req, resource_type, opts.selector).await;
+    kubernetes::collect_info(client.clone(), &mut resource_req, resource_type, opts.utilization, opts.selector).await;
 
     let data = utils::parse_resource_data(resource_req, sort_by);
     let mut table = Table::new(&data);
-
+        
     table.with(Style::rounded());
+    if !opts.utilization {
+        table.with(Disable::column(ByColumnName::new("cpu usage")));
+        table.with(Disable::column(ByColumnName::new("mem usage")));
+    }
+
     println!("{}", table);
 }
