@@ -20,6 +20,17 @@ struct NodeMetrics {
     usage: Usage,
 }
 
+#[derive(serde::Deserialize, Clone, Debug)]
+struct ContainerMetrics {
+    usage: Usage,
+}
+
+#[derive(serde::Deserialize, Clone, Debug)]
+struct PodMetrics {
+    metadata: ObjectMeta,
+    containers: Vec<ContainerMetrics>,
+}
+
 impl k8s_openapi::Resource for NodeMetrics {
     const GROUP: &'static str = "metrics.k8s.io";
     const KIND: &'static str = "node";
@@ -30,7 +41,29 @@ impl k8s_openapi::Resource for NodeMetrics {
     type Scope = k8s_openapi::ClusterResourceScope;
 }
 
+impl k8s_openapi::Resource for PodMetrics {
+    const GROUP: &'static str = "metrics.k8s.io";
+    const KIND: &'static str = "pod";
+    const VERSION: &'static str = "v1beta1";
+    const API_VERSION: &'static str = "metrics.k8s.io/v1beta1";
+    const URL_PATH_SEGMENT: &'static str = "pods";
+
+    type Scope = k8s_openapi::NamespaceResourceScope;
+}
+
 impl k8s_openapi::Metadata for NodeMetrics {
+    type Ty = ObjectMeta;
+
+    fn metadata(&self) -> &<Self as k8s_openapi::Metadata>::Ty {
+        &self.metadata
+    }
+
+    fn metadata_mut(&mut self) -> &mut<Self as k8s_openapi::Metadata>::Ty {
+        &mut self.metadata
+    }
+}
+
+impl k8s_openapi::Metadata for PodMetrics {
     type Ty = ObjectMeta;
 
     fn metadata(&self) -> &<Self as k8s_openapi::Metadata>::Ty {
@@ -143,7 +176,7 @@ pub async fn get_node_utilization(client: Client, node_name: &String) -> (u32, f
     let node_metrics = match api.get(node_name).await {
         Ok(n) => n,
         Err(e) => {
-            eprintln!("Error get node utilization information {}", e);
+            eprintln!("Error getting node utilization information {}", e);
             return (0, 0.0);
         }
     };
@@ -152,6 +185,46 @@ pub async fn get_node_utilization(client: Client, node_name: &String) -> (u32, f
     let mem_usage = parse_capacity_requests(node_metrics.usage.memory.0.to_string());
 
     return (cpu_usage, mem_usage);
+}
+
+pub async fn get_pod_utilization(client: Client, namespace: &String) -> (u32, f32) {
+    let api = Api::<Pod>::namespaced(client.clone(), &namespace);
+    let lp = ListParams::default();
+
+    let pods = match api.list(&lp).await {
+        Ok(pods) => pods,
+        Err(e) => {
+            eprintln!("Error listing pods {:?}", e);
+            return (0, 0.0);
+        },
+    };
+
+    let mut cpu_usage: u32 = 0;
+    let mut mem_usage: f32 = 0.0;
+
+    if pods.items.len() != 0 {
+        for pod in pods.items {
+            let api = Api::<PodMetrics>::namespaced(client.clone(), namespace);
+            let pod_metrics = match api.get(pod.metadata.name.unwrap().as_str()).await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("Error getting pod utilization information {}", e);
+                    return (0, 0.0);
+                }
+            };
+
+
+            for container in pod_metrics.containers {
+                cpu_usage += parse_cpu_requests(container.usage.cpu.0.to_string());
+                mem_usage += parse_capacity_requests(container.usage.memory.0.to_string());
+            }
+        }
+
+        return (cpu_usage, mem_usage)
+    }
+
+    return (0, 0.0)
+
 }
 
 pub async fn get_pods_resources_req(client: Client, resource_type: &ResourceType, resource_name: &String) -> (u32, f32, f32, usize) {
@@ -167,7 +240,7 @@ pub async fn get_pods_resources_req(client: Client, resource_type: &ResourceType
     let pods = match api.list(&lp).await {
         Ok(pods) => pods,
         Err(e) => {
-            eprint!("Error listing pods {:?}", e);
+            eprintln!("Error listing pods {:?}", e);
             return (0, 0.0, 0.0, 0);
         }
     };
@@ -227,6 +300,36 @@ async fn get_containers_resources_req(containers: Vec<Container>) -> (u32, f32, 
     }
 
     return (cpu_requested, mem_requested, storage_requested)
+}
+
+async fn get_cluster_node_info(client: Client) -> (u32, f32, f32, usize) {
+    let api: Api<Node> = Api::all(client.clone());
+    let lp = ListParams::default();
+
+    let nodes = match api.list(&lp).await {
+        Ok(nodes) => nodes,
+        Err(e) => {
+            eprintln!("Error getting nodes information {}", e);
+            return (0, 0.0, 0.0, 0);
+        }
+    };
+
+    let mut cluster_total_cpu: u32 = 0;
+    let mut cluster_total_mem: f32 = 0.0;
+    let mut cluster_total_storage: f32 = 0.0;
+    let mut cluster_total_pods: usize =  0;
+
+    for node in nodes {
+        if let Some(node_name) = node.metadata.name {
+            let (total_cpu, total_mem, total_storage, total_pods) = get_node_info(client.clone(), &node_name).await;
+            cluster_total_cpu += total_cpu;
+            cluster_total_mem += total_mem;
+            cluster_total_storage += total_storage;
+            cluster_total_pods += total_pods;
+        }
+    }
+
+    return (cluster_total_cpu, cluster_total_mem, cluster_total_storage, cluster_total_pods)
 }
 
 async fn get_node_info(client: Client, node_name: &String) -> (u32, f32, f32, usize) {
@@ -325,26 +428,49 @@ pub async fn collect_info(client: Client, rrs: &mut Vec<ResouceRequests>, resour
 
     for name in resource_names {
         let (cpu_requests, mem_requests, storage_requests, pods) = get_pods_resources_req(client.clone(), &resource_type, &name).await;
-        let (cpu_total, mem_total, storage_total, pods_total) = get_node_info(client.clone(), &name).await;
 
         let mut cpu_usage: u32 = 0;
         let mut mem_usage: f32 = 0.0;
+        let mut cpu_total: u32 = 0;
+        let mut mem_total: f32 = 0.0;
+        let mut storage_total: f32 = 0.0;
+        let mut pods_total: usize = 0;
+
         if utilization {
-            (cpu_usage, mem_usage) = get_node_utilization(client.clone(), &name).await;
+            match &resource_type {
+                ResourceType::Node => {
+                    (cpu_usage, mem_usage) = get_node_utilization(client.clone(), &name).await;
+                },
+                ResourceType::Namespace => {
+                    (cpu_usage, mem_usage) = get_pod_utilization(client.clone(), &name).await;
+                }
+            }
+        }
+
+        cluster_cpu_req += cpu_requests;
+        cluster_cpu_usage += cpu_usage;
+        cluster_mem_req += mem_requests;
+        cluster_mem_usage += mem_usage;
+        cluster_storage_req += storage_requests;
+        cluster_pods_req += pods;
+
+        match &resource_type {
+            ResourceType::Namespace => {
+                if (cluster_cpu_total, cluster_mem_total, cluster_storage_total, cluster_pods_total) == (0, 0.0, 0.0, 0) {
+                    (cluster_cpu_total, cluster_mem_total, cluster_storage_total, cluster_pods_total) = get_cluster_node_info(client.clone()).await;
+                }
+                (cpu_total, mem_total, storage_total, pods_total) = (cluster_cpu_total, cluster_mem_total, cluster_storage_total, cluster_pods_total)
+            },
+            ResourceType::Node => {
+                (cpu_total, mem_total, storage_total, pods_total) = get_node_info(client.clone(), &name).await;
+                cluster_cpu_total += cpu_total;
+                cluster_mem_total += mem_total;
+                cluster_storage_total += storage_total;
+                cluster_pods_total += pods_total;
+            }
         }
 
         utils::add_data(name.clone(), cpu_requests, cpu_total, cpu_usage, mem_requests, mem_total, mem_usage, storage_requests, storage_total, pods, pods_total, rrs).await;
-
-        cluster_cpu_req += cpu_requests;
-        cluster_cpu_total += cpu_total;
-        cluster_cpu_usage += cpu_usage;
-        cluster_mem_req += mem_requests;
-        cluster_mem_total += mem_total;
-        cluster_mem_usage += mem_usage;
-        cluster_storage_req += storage_requests;
-        cluster_storage_total += storage_total;
-        cluster_pods_req += pods;
-        cluster_pods_total += pods_total;
     }
 
     utils::add_data(
