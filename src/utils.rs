@@ -91,36 +91,37 @@ pub async fn add_data(
 }
 
 pub fn parse_cpu_requests(cpu: String) -> u32 {
-    if cpu.contains("m") {
-        let m = cpu.replace("m", "");
-        return m.parse::<u32>().unwrap();
-    } else if cpu.contains(".") {
-        let m = cpu.replace(".", "");
-        return m.parse::<u32>().unwrap() * 100;
-    } else if cpu.contains("n") {
-        let m = cpu.replace("n", "");
-        return (m.parse::<f32>().unwrap() / 1000000.0) as u32;
+    if cpu.contains(".") {
+        let n = cpu.replace(".", "");
+        return n.parse::<u32>().unwrap() * 100;
+    } else if let Some((n, _unit)) = cpu.split_once("m") {
+        return n.parse::<u32>().unwrap();
+    } else if let Some((n, _unit)) = cpu.split_once("n") {
+        return (n.parse::<f32>().unwrap() / 1000000.0) as u32;
     } else {
         return cpu.parse::<u32>().unwrap() * 1000;
     }
 }
 
 pub fn parse_capacity_requests(mem: String) -> f32 {
-    if mem.contains("Ki") {
-        let m = mem.replace("Ki", "");
-        return m.parse::<f32>().unwrap() / 1024.0;
-    } else if mem.contains("Mi") {
-        let m = mem.replace("Mi", "");
-        return m.parse::<f32>().unwrap();
-    } else if mem.contains("Gi") {
-        let m = mem.replace("Gi", "");
-        return m.parse::<f32>().unwrap() * 1024.0;
-    } else if mem.contains("Ti") {
-        let m = mem.replace("Ti", "");
-        return m.parse::<f32>().unwrap() * 1024.0 * 1024.0;
-    } else if mem.contains("m") {
-        let m = mem.replace("m", "");
-        return m.parse::<f32>().unwrap() / 1024.0 / 1024.0 / 1024.0;
+    if let Some((n, _unit)) = mem.split_once("Ki") {
+        return n.parse::<f32>().unwrap() / 1024.0;
+    } else if let Some((n, _unit)) = mem.split_once("Mi") {
+        return n.parse::<f32>().unwrap();
+    } else if let Some((n, _unit)) = mem.split_once("Gi") {
+        return n.parse::<f32>().unwrap() * 1024.0;
+    } else if let Some((n, _unit)) = mem.split_once("Ti") {
+        return n.parse::<f32>().unwrap() * 1024.0 * 1024.0;
+    } else if let Some((n, _unit)) = mem.split_once("m") {
+        return n.parse::<f32>().unwrap() / 1024.0 / 1024.0 / 1024.0;
+    } else if let Some((n, _unit)) = mem.split_once("k") {
+        return n.parse::<f32>().unwrap() / 1000.0 * 0.953674;
+    } else if let Some((n, _unit)) = mem.split_once("M") {
+        return n.parse::<f32>().unwrap() * 0.953674;
+    } else if let Some((n, _unit)) = mem.split_once("G") {
+        return n.parse::<f32>().unwrap() * 0.953674 * 1000.0;
+    } else if let Some((n, _unit)) = mem.split_once("T") {
+        return n.parse::<f32>().unwrap() * 0.953674 * 1000.0 * 1000.0;
     } else {
         return mem.parse::<f32>().unwrap() / 1024.0 / 1024.0;
     }
