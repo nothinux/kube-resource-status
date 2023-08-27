@@ -1,6 +1,6 @@
 use std::{str::FromStr};
 
-use kube::{Client, Config, Api, api::ListParams, client::ConfigExt, core::ObjectMeta};
+use kube::{Client, Api, api::ListParams, core::ObjectMeta};
 use k8s_openapi::{api::core::v1::{Node, Pod, Namespace, Container}, apimachinery::pkg::api::resource::Quantity};
 use tabled::{Tabled};
 
@@ -153,22 +153,6 @@ impl FromStr for ResourceType {
             _ => Err(format!("invalid resource type {}", s)),
         }
     }
-}
-
-pub async fn connect() -> Client {
-    let c = Config::infer().await.unwrap();
-
-    let client = if c.tls_server_name.is_some() {
-        let https = c.rustls_https_connector().unwrap();
-        let service = tower::ServiceBuilder::new().layer(c.base_uri_layer()).service(hyper::Client::builder().build(https));
-        Client::new(service, c.default_namespace)
-    } else {
-        let https = c.openssl_https_connector().unwrap();
-        let service = tower::ServiceBuilder::new().layer(c.base_uri_layer()).service(hyper::Client::builder().build(https));
-        Client::new(service, c.default_namespace)
-    };
-
-    return client;
 }
 
 pub async fn get_node_utilization(client: Client, node_name: &String) -> (u32, f32) {

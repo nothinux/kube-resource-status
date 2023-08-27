@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use kube::{Client};
 
 use bpaf::Bpaf;
 use tabled::{Table, Style, Disable, locator::ByColumnName};
@@ -54,7 +55,14 @@ async fn main() {
     }
 
     let mut resource_req = Vec::new();
-    let client = kubernetes::connect().await;
+
+    let client = match Client::try_default().await {
+        Err(e) => {
+            eprintln!("Error creating kubernetes client {:?}", e);
+            return;
+       },
+        Ok(client) => client,
+    };
 
     kubernetes::collect_info(client.clone(), &mut resource_req, resource_type, opts.utilization, opts.selector).await;
 
