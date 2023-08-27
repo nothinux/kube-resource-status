@@ -7,6 +7,7 @@ on:
     - "v*.*.*"
 env:
   BIN_NAME: kubectl-resource_status
+  RELEASE_NAME: kube-resource-status
 jobs:
   create-release:
     name: create-release
@@ -33,22 +34,31 @@ jobs:
     needs: create-release
     strategy:
       matrix:
-        build: [x86_64-apple-darwin, aarch64-apple-darwin]
+        build: [darwin-amd64, darwin-arm64, linux-amd64]
         include:
-        - build: x86_64-apple-darwin
+        - build: darwin-amd64
           os: macos-latest
           rust: stable
           target: x86_64-apple-darwin
-        - build: aarch64-apple-darwin
+        - build: darwin-arm64
           os: macos-latest
           rust: stable
           target: aarch64-apple-darwin
+        - build: linux-amd64
+          os: ubuntu-20.04
+          rust: stable
+          target: x86_64-unknown-linux-musl
     runs-on: ${{ matrix.os }}
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
       with:
         fetch-depth: 1
+    - name: Install packages (Ubuntu)
+      if: matrix.os == 'ubuntu-20.04'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends xz-utils liblz4-tool musl-tools
     - name: Install Rust
       uses: actions-rs/toolchain@v1
       with:
@@ -61,7 +71,9 @@ jobs:
     - name: Build archive
       shell: bash
       run: |
-        bin_dir="${{ env.BIN_NAME }}-${{ needs.create-release.outputs.release_version }}-${{ matrix.target }}"
+        BIN_VER=$(echo "${{ needs.create-release.outputs.release_version }}" | sed 's/v//g')
+        bin_dir="${{ env.RELEASE_NAME }}-$BIN_VER-${{ matrix.build }}"
+        mkdir -p "$bin_dir"
 
         cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}" "$bin_dir/"
         tar czf "$bin_dir.tar.gz" -C "$bin_dir" .
@@ -81,9 +93,12 @@ jobs:
         with:
           homebrew_owner: nothinux
           homebrew_tap: homebrew-tools
-          formula_folder: formula
+          formula_folder: Formula
+          commit_owner: homebrew-releaser
+          commit_email: nothinux@gmail.com
           github_token: ${{ secrets.TAP_TOKEN }}
           install: 'bin.install "kubectl-resource_status"'
+          download_strategy: CurlDownloadStrategy
           target_darwin_amd64: true
           target_darwin_arm64: true
           target_linux_amd64: true
